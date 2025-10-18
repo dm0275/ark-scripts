@@ -7,22 +7,17 @@
   .\server.ps1 update [flags...]
 
 .EXAMPLES
-  # Start with defaults
+  # Start with defaults (BattlEye OFF by default)
   .\server.ps1 start
 
-  # Start with overrides
-  .\server.ps1 start -Map TheIsland_WP -SessionName "My ASA" -GamePort 7777 -QueryPort 27015 -RCONPort 27020 -MaxPlayers 20 -ExtraArgs "-NoBattlEye","-log"
+  # Start with mods and a custom name
+  .\server.ps1 start -SessionName "Friends Night" -Mods 123456,987654
 
-  # Start without firewall changes and no auto-restart
-  .\server.ps1 start -NoFirewall -NoAutoRestart
+  # Temporarily enable BattlEye (overrides default)
+  .\server.ps1 start -NoBattlEye:$false
 
-  # Update via SteamCMD (anonymous)
-  .\server.ps1 update -SteamCmdPath "C:\steamcmd\steamcmd.exe" -InstallDir "E:\arkascendedserver" -Validate
-
-.NOTES
-  - Default server path points to your install:
-      E:\arkascendedserver\ShooterGame\Binaries\Win64
-  - App ID for ASA dedicated server: 2430930
+  # Update the server app via SteamCMD (anonymous) and validate files
+  .\server.ps1 update -Validate
 #>
 
 [CmdletBinding(DefaultParameterSetName="Start")]
@@ -32,7 +27,7 @@ param(
   [ValidateSet("start","update")]
   [string]$Command,
 
-  # --- Shared-ish ----------------------------------------------------------------
+  # --- Shared -----------------------------------------------------------------
   [string]$WorkingDir = "E:\arkascendedserver\ShooterGame\Binaries\Win64",
 
   # --- START PARAMS -----------------------------------------------------------
@@ -60,8 +55,9 @@ param(
   [Parameter(ParameterSetName="Start")]
   [string]$ServerAdminPassword = "ChangeMeAdmin!",
 
+  # BattlEye disabled by default; override with -NoBattlEye:$false when starting
   [Parameter(ParameterSetName="Start")]
-  [switch]$NoBattlEye,          # adds -NoBattlEye if set
+  [switch]$NoBattlEye = $true,
 
   [Parameter(ParameterSetName="Start")]
   [switch]$NoFirewall,          # skip firewall rule creation
@@ -72,8 +68,14 @@ param(
   [Parameter(ParameterSetName="Start")]
   [int]$RestartDelaySeconds = 5,
 
+  # ASA mods via -mods= (comma-separated IDs)
+  #   Example: -Mods 123456,987654,111222
   [Parameter(ParameterSetName="Start")]
-  [string[]]$ExtraArgs = @("-server","-log"),  # more raw flags to pass after the URL block
+  [string[]]$Mods = @(),
+
+  # Extra raw flags passed after the URL block
+  [Parameter(ParameterSetName="Start")]
+  [string[]]$ExtraArgs = @("-server","-log"),
 
   # --- UPDATE PARAMS ----------------------------------------------------------
   [Parameter(ParameterSetName="Update")]
@@ -86,7 +88,7 @@ param(
   [switch]$Validate,
 
   [Parameter(ParameterSetName="Update")]
-  [string]$SteamLogin = "anonymous" # or "username password" if needed
+  [string]$SteamLogin = "anonymous"
 )
 
 function Write-Header($Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
@@ -108,7 +110,8 @@ switch ($Command) {
       throw "ArkAscendedServer.exe not found at: $exe"
     }
 
-    # URL-style block: Map then ?key=value pairs then 'listen'
+    # ---------------- Build URL-style block ----------------------------------
+    # Order: Map -> ?key=value ... -> listen
     $url = @()
     $url += "$Map"
     $url += "?SessionName=$([uri]::EscapeDataString($SessionName))"
@@ -120,20 +123,33 @@ switch ($Command) {
     if ($null -ne $RCONPort)  { $url += "?RCONPort=$RCONPort" }
     $url += "listen"
 
+    # ---------------- Build final argument list ------------------------------
     $args = @($url -join "")
+
+    # ASA mods: -mods=ID1,ID2,... (server auto-downloads/updates on boot)
+    if ($Mods.Count -gt 0) {
+      $modList = ($Mods -join ",")
+      $args += "-mods=$modList"
+      Write-Host "Using ASA mods: $modList"
+    }
+
     if ($NoBattlEye) { $args += "-NoBattlEye" }
     $args += $ExtraArgs
 
+    # ---------------- Optional firewall rules --------------------------------
     if (-not $NoFirewall) {
       try {
         Ensure-FirewallRule -Name "ASA GamePort $GamePort (UDP)"  -Protocol UDP -Port $GamePort
         Ensure-FirewallRule -Name "ASA QueryPort $QueryPort (UDP)" -Protocol UDP -Port $QueryPort
-        if ($null -ne $RCONPort) { Ensure-FirewallRule -Name "ASA RCON $RCONPort (TCP)" -Protocol TCP -Port $RCONPort }
+        if ($null -ne $RCONPort) {
+          Ensure-FirewallRule -Name "ASA RCON $RCONPort (TCP)" -Protocol TCP -Port $RCONPort
+        }
       } catch {
         Write-Warning "Couldn't set firewall rules (run PowerShell as Administrator if needed)."
       }
     }
 
+    # ---------------- Launch loop (optional auto-restart) --------------------
     Write-Header "Launching Ark Ascended Server"
     Write-Host "Path: $exe"
     Write-Host "Args: $($args -join ' ')`n"
@@ -159,17 +175,13 @@ switch ($Command) {
       New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     }
 
-    $appId = 2430930
+    $appId = 2430930  # ASA Dedicated Server
     $validateToken = if ($Validate) { " validate" } else { "" }
+    $cmd = "+force_install_dir `"$InstallDir`" +login $SteamLogin +app_update $appId$validateToken +quit"
 
-    # Build the SteamCMD arg string
-    $loginParts = $SteamLogin
-    $cmd = "+force_install_dir `"$InstallDir`" +login $loginParts +app_update $appId$validateToken +quit"
-
-    Write-Header "Updating ASA Dedicated Server via SteamCMD"
+    Write-Header "Updating ASA Dedicated Server (Steam AppID $appId)"
     Write-Host "SteamCMD: $SteamCmdPath"
     Write-Host "InstallDir: $InstallDir"
-    Write-Host "App ID: $appId"
     if ($Validate) { Write-Host "Validate: true" }
 
     & $SteamCmdPath $cmd
@@ -181,3 +193,4 @@ switch ($Command) {
     }
   }
 }
+
