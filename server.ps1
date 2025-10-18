@@ -1,81 +1,86 @@
 <# 
 .SYNOPSIS
-  ARK: Survival Ascended server helper.
+  ARK: Survival Ascended Server Manager
 
 .USAGE
   .\server.ps1 start [flags...]
   .\server.ps1 update [flags...]
+  .\server.ps1 prefetch [flags...]
 
-.EXAMPLES
-  # Start with defaults (BattlEye OFF by default)
-  .\server.ps1 start
-
-  # Start with mods and a custom name
-  .\server.ps1 start -SessionName "Friends Night" -Mods 123456,987654
-
-  # Temporarily enable BattlEye (overrides default)
-  .\server.ps1 start -NoBattlEye:$false
-
-  # Update the server app via SteamCMD (anonymous) and validate files
-  .\server.ps1 update -Validate
+.NOTES
+  - Default path: E:\arkascendedserver\ShooterGame\Binaries\Win64
+  - Steam App ID: 2430930
+  - Mods auto-download/update when using -mods=<ids>
 #>
 
 [CmdletBinding(DefaultParameterSetName="Start")]
 param(
   # --- Top-level command ------------------------------------------------------
   [Parameter(Mandatory=$true, Position=0)]
-  [ValidateSet("start","update")]
+  [ValidateSet("start","update","prefetch")]
   [string]$Command,
 
   # --- Shared -----------------------------------------------------------------
   [string]$WorkingDir = "E:\arkascendedserver\ShooterGame\Binaries\Win64",
 
-  # --- START PARAMS -----------------------------------------------------------
+  # --- START / PREFETCH PARAMS ------------------------------------------------
   [Parameter(ParameterSetName="Start")]
+  [Parameter(ParameterSetName="Prefetch")]
   [string]$Map = "TheIsland_WP",
 
   [Parameter(ParameterSetName="Start")]
+  [Parameter(ParameterSetName="Prefetch")]
   [string]$SessionName = "My ASA Server",
 
   [Parameter(ParameterSetName="Start")]
+  [Parameter(ParameterSetName="Prefetch")]
   [int]$MaxPlayers = 16,
 
   [Parameter(ParameterSetName="Start")]
-  [int]$GamePort = 7777,        # UDP
+  [Parameter(ParameterSetName="Prefetch")]
+  [int]$GamePort = 7777,
 
   [Parameter(ParameterSetName="Start")]
-  [int]$QueryPort = 27015,      # UDP
+  [Parameter(ParameterSetName="Prefetch")]
+  [int]$QueryPort = 27015,
 
   [Parameter(ParameterSetName="Start")]
-  [Nullable[int]]$RCONPort = 27020, # TCP; set $null to omit
+  [Parameter(ParameterSetName="Prefetch")]
+  [Nullable[int]]$RCONPort = 27020,
 
   [Parameter(ParameterSetName="Start")]
+  [Parameter(ParameterSetName="Prefetch")]
   [string]$ServerPassword = "",
 
   [Parameter(ParameterSetName="Start")]
+  [Parameter(ParameterSetName="Prefetch")]
   [string]$ServerAdminPassword = "ChangeMeAdmin!",
 
-  # BattlEye disabled by default; override with -NoBattlEye:$false when starting
+  # BattlEye disabled by default
   [Parameter(ParameterSetName="Start")]
+  [Parameter(ParameterSetName="Prefetch")]
   [switch]$NoBattlEye = $true,
 
   [Parameter(ParameterSetName="Start")]
-  [switch]$NoFirewall,          # skip firewall rule creation
+  [switch]$NoFirewall,
 
   [Parameter(ParameterSetName="Start")]
-  [switch]$NoAutoRestart,       # do not auto-restart the process
+  [switch]$NoAutoRestart,
 
   [Parameter(ParameterSetName="Start")]
   [int]$RestartDelaySeconds = 5,
 
-  # ASA mods via -mods= (comma-separated IDs)
-  #   Example: -Mods 123456,987654,111222
+  # ASA mods via -mods=
   [Parameter(ParameterSetName="Start")]
+  [Parameter(ParameterSetName="Prefetch")]
   [string[]]$Mods = @(),
 
-  # Extra raw flags passed after the URL block
   [Parameter(ParameterSetName="Start")]
   [string[]]$ExtraArgs = @("-server","-log"),
+
+  # --- PREFETCH PARAMS --------------------------------------------------------
+  [Parameter(ParameterSetName="Prefetch")]
+  [int]$TimeoutMinutes = 20,
 
   # --- UPDATE PARAMS ----------------------------------------------------------
   [Parameter(ParameterSetName="Update")]
@@ -91,6 +96,7 @@ param(
   [string]$SteamLogin = "anonymous"
 )
 
+# Utility helpers
 function Write-Header($Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 
 function Ensure-FirewallRule {
@@ -103,40 +109,40 @@ function Ensure-FirewallRule {
   }
 }
 
+function Build-ServerArgs {
+  param($Map,$SessionName,$GamePort,$QueryPort,$MaxPlayers,$ServerPassword,$ServerAdminPassword,$RCONPort,$Mods,$NoBattlEye,$ExtraArgs)
+
+  $url = @()
+  $url += "$Map"
+  $url += "?SessionName=$([uri]::EscapeDataString($SessionName))"
+  $url += "?Port=$GamePort"
+  $url += "?QueryPort=$QueryPort"
+  $url += "?MaxPlayers=$MaxPlayers"
+  if ($ServerPassword)      { $url += "?ServerPassword=$ServerPassword" }
+  if ($ServerAdminPassword) { $url += "?ServerAdminPassword=$ServerAdminPassword" }
+  if ($null -ne $RCONPort)  { $url += "?RCONPort=$RCONPort" }
+  $url += "listen"
+
+  $args = @($url -join "")
+  if ($Mods.Count -gt 0) {
+    $modList = ($Mods -join ",")
+    $args += "-mods=$modList"
+    Write-Host "Using ASA mods: $modList"
+  }
+  if ($NoBattlEye) { $args += "-NoBattlEye" }
+  $args += $ExtraArgs
+  return ,$args
+}
+
 switch ($Command) {
+
   'start' {
     $exe = Join-Path $WorkingDir "ArkAscendedServer.exe"
-    if (!(Test-Path $exe)) {
-      throw "ArkAscendedServer.exe not found at: $exe"
-    }
+    if (!(Test-Path $exe)) { throw "ArkAscendedServer.exe not found at: $exe" }
 
-    # ---------------- Build URL-style block ----------------------------------
-    # Order: Map -> ?key=value ... -> listen
-    $url = @()
-    $url += "$Map"
-    $url += "?SessionName=$([uri]::EscapeDataString($SessionName))"
-    $url += "?Port=$GamePort"
-    $url += "?QueryPort=$QueryPort"
-    $url += "?MaxPlayers=$MaxPlayers"
-    if ($ServerPassword)      { $url += "?ServerPassword=$ServerPassword" }
-    if ($ServerAdminPassword) { $url += "?ServerAdminPassword=$ServerAdminPassword" }
-    if ($null -ne $RCONPort)  { $url += "?RCONPort=$RCONPort" }
-    $url += "listen"
+    $args = Build-ServerArgs $Map $SessionName $GamePort $QueryPort $MaxPlayers `
+      $ServerPassword $ServerAdminPassword $RCONPort $Mods $NoBattlEye $ExtraArgs
 
-    # ---------------- Build final argument list ------------------------------
-    $args = @($url -join "")
-
-    # ASA mods: -mods=ID1,ID2,... (server auto-downloads/updates on boot)
-    if ($Mods.Count -gt 0) {
-      $modList = ($Mods -join ",")
-      $args += "-mods=$modList"
-      Write-Host "Using ASA mods: $modList"
-    }
-
-    if ($NoBattlEye) { $args += "-NoBattlEye" }
-    $args += $ExtraArgs
-
-    # ---------------- Optional firewall rules --------------------------------
     if (-not $NoFirewall) {
       try {
         Ensure-FirewallRule -Name "ASA GamePort $GamePort (UDP)"  -Protocol UDP -Port $GamePort
@@ -149,7 +155,6 @@ switch ($Command) {
       }
     }
 
-    # ---------------- Launch loop (optional auto-restart) --------------------
     Write-Header "Launching Ark Ascended Server"
     Write-Host "Path: $exe"
     Write-Host "Args: $($args -join ' ')`n"
@@ -167,15 +172,13 @@ switch ($Command) {
   }
 
   'update' {
-    if (!(Test-Path $SteamCmdPath)) {
-      throw "SteamCMD not found at: $SteamCmdPath"
-    }
+    if (!(Test-Path $SteamCmdPath)) { throw "SteamCMD not found at: $SteamCmdPath" }
     if (!(Test-Path $InstallDir)) {
-      Write-Host "InstallDir doesn't exist; creating: $InstallDir"
+      Write-Host "Creating InstallDir: $InstallDir"
       New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     }
 
-    $appId = 2430930  # ASA Dedicated Server
+    $appId = 2430930
     $validateToken = if ($Validate) { " validate" } else { "" }
     $cmd = "+force_install_dir `"$InstallDir`" +login $SteamLogin +app_update $appId$validateToken +quit"
 
@@ -186,11 +189,49 @@ switch ($Command) {
 
     & $SteamCmdPath $cmd
 
-    if ($LASTEXITCODE -ne 0) {
-      throw "SteamCMD returned exit code $LASTEXITCODE"
-    } else {
-      Write-Host "`nUpdate completed."
+    if ($LASTEXITCODE -ne 0) { throw "SteamCMD returned exit code $LASTEXITCODE" }
+    Write-Host "`nUpdate completed."
+  }
+
+  'prefetch' {
+    $exe = Join-Path $WorkingDir "ArkAscendedServer.exe"
+    if (!(Test-Path $exe)) { throw "ArkAscendedServer.exe not found at: $exe" }
+
+    if ($Mods.Count -eq 0) {
+      throw "No mods specified. Use -Mods <id1,id2,...>"
     }
+
+    Write-Header "Prefetching Mods"
+    $args = Build-ServerArgs $Map $SessionName $GamePort $QueryPort $MaxPlayers `
+      $ServerPassword $ServerAdminPassword $RCONPort $Mods $NoBattlEye @("-server","-NoCrashDialog")
+
+    Write-Host "Starting server to download mods..."
+    $proc = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory $WorkingDir -PassThru
+
+    $timeout = (Get-Date).AddMinutes($TimeoutMinutes)
+    $logDir = Join-Path $WorkingDir "..\..\Saved\Logs"
+    Write-Host "Monitoring logs in: $logDir"
+
+    do {
+      Start-Sleep -Seconds 10
+      $logFiles = Get-ChildItem -Path $logDir -Filter "*.log" -ErrorAction SilentlyContinue
+      $found = $false
+      foreach ($log in $logFiles) {
+        $content = Get-Content $log.FullName -ErrorAction SilentlyContinue | Select-String "Downloading mod"
+        if ($content) { Write-Host "Mod download in progress..." }
+        $complete = Get-Content $log.FullName -ErrorAction SilentlyContinue | Select-String "Mod download complete"
+        if ($complete) { $found = $true }
+      }
+    } until ($found -or (Get-Date) -gt $timeout)
+
+    if ($found) {
+      Write-Host "Mods downloaded successfully!"
+    } else {
+      Write-Warning "Timeout reached ($TimeoutMinutes minutes). Mods may still be downloading."
+    }
+
+    Write-Host "Stopping server process..."
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
   }
 }
 
