@@ -112,18 +112,20 @@ function Ensure-FirewallRule {
 function Build-ServerArgs {
   param($Map,$SessionName,$GamePort,$QueryPort,$MaxPlayers,$ServerPassword,$ServerAdminPassword,$RCONPort,$Mods,$NoBattlEye,$ExtraArgs)
 
-  $url = @()
-  $url += "$Map"
-  $url += "?SessionName=$([uri]::EscapeDataString($SessionName))"
-  $url += "?Port=$GamePort"
-  $url += "?QueryPort=$QueryPort"
-  $url += "?MaxPlayers=$MaxPlayers"
-  if ($ServerPassword)      { $url += "?ServerPassword=$ServerPassword" }
-  if ($ServerAdminPassword) { $url += "?ServerAdminPassword=$ServerAdminPassword" }
-  if ($null -ne $RCONPort)  { $url += "?RCONPort=$RCONPort" }
-  $url += "listen"
+  # Build URL-style part; ensure a SPACE before 'listen' so it doesn't glue to the last token
+  $urlParts = @()
+  $urlParts += "$Map"
+  $urlParts += "?SessionName=$([uri]::EscapeDataString($SessionName))"
+  $urlParts += "?Port=$GamePort"
+  $urlParts += "?QueryPort=$QueryPort"
+  $urlParts += "?MaxPlayers=$MaxPlayers"
+  if ($ServerPassword)      { $urlParts += "?ServerPassword=$ServerPassword" }
+  if ($ServerAdminPassword) { $urlParts += "?ServerAdminPassword=$ServerAdminPassword" }
+  if ($null -ne $RCONPort)  { $urlParts += "?RCONPort=$RCONPort" }
 
-  $args = @($url -join "")
+  # <- key fix: add a leading space before 'listen'
+  $args = @(($urlParts -join "") + " listen")
+
   if ($Mods.Count -gt 0) {
     $modList = ($Mods -join ",")
     $args += "-mods=$modList"
@@ -234,4 +236,3 @@ switch ($Command) {
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
   }
 }
-
