@@ -73,7 +73,7 @@ param(
   # ASA mods via -mods=
   [Parameter(ParameterSetName="Start")]
   [Parameter(ParameterSetName="Prefetch")]
-  [string[]]$Mods = @(),
+  [string[]]$Mods = @("929578", "953154", "934231"),
 
   [Parameter(ParameterSetName="Start")]
   [string[]]$ExtraArgs = @("-server","-log"),
