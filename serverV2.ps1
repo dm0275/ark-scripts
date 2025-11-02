@@ -14,13 +14,16 @@ param(
 
 # Server runtime settings
   [string]$Map = "TheIsland_WP",
-  [string]$SessionName = "My_ASA_Server",
+  [string]$SessionName = "My ASA Server",
   [int]$MaxPlayers = 16,
   [int]$GamePort = 7777,
   [int]$QueryPort = 27015,
   [Nullable[int]]$RCONPort = 27020,
   [string]$ServerPassword = "",
-  [string]$ServerAdminPassword = ""
+  [string]$ServerAdminPassword = "",
+  [switch]$NoBattlEye = $true,
+  [string[]]$Mods = @("929578", "953154", "934231"),
+  [string[]]$ExtraArgs = @("-server","-log")
 )
 
 # =====================[ Helpers ]=====================
@@ -236,7 +239,10 @@ function Start-ASAServer {
     [int]$QueryPort,
     [Nullable[int]]$RCONPort,
     [string]$ServerPassword,
-    [string]$ServerAdminPassword
+    [string]$ServerAdminPassword,
+    [switch]$NoBattlEye,
+    [string[]]$Mods,
+    [string[]]$ExtraArgs
   )
 
   $exe = Join-Path $WorkingDir "ArkAscendedServer.exe"
@@ -259,11 +265,18 @@ function Start-ASAServer {
 
   # Add 'listen' with a leading space (do not put comments inside strings)
   $args = @($mapAndParams + " listen")
+  if ($Mods -and $Mods.Count -gt 0) {
+    $modList = ($Mods -join ",")
+    $args += "-mods=$modList"
+    Write-Host "Using ASA mods: $modList"
+  }
+  if ($NoBattlEye) { $args += "-NoBattlEye" }
+  if ($ExtraArgs -and $ExtraArgs.Count -gt 0) { $args += $ExtraArgs }
 
   Write-Host "Launching ASA server..."
   Write-Host "Path: $exe"
   Write-Host "Args: $($args -join ' ')"
-  Start-Process -FilePath $exe -ArgumentList $args -NoNewWindow
+  Start-Process -FilePath $exe -ArgumentList $args -NoNewWindow -WorkingDirectory $WorkingDir
 }
 
 # =====================[ Command Dispatch ]=====================
@@ -283,7 +296,8 @@ switch ($Command) {
     }
     try {
       Start-ASAServer -WorkingDir $WorkingDir -Map $Map -SessionName $SessionName -MaxPlayers $MaxPlayers `
-        -GamePort $GamePort -QueryPort $QueryPort -RCONPort $RCONPort -ServerPassword $ServerPassword -ServerAdminPassword $ServerAdminPassword
+        -GamePort $GamePort -QueryPort $QueryPort -RCONPort $RCONPort -ServerPassword $ServerPassword -ServerAdminPassword $ServerAdminPassword `
+        -NoBattlEye:$NoBattlEye -Mods $Mods -ExtraArgs $ExtraArgs
     } catch { Write-Error $_; exit 1 }
     break
   }
