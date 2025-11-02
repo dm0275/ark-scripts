@@ -6,7 +6,7 @@ param(
   [string]$Command,
 
 # Shared
-  [string]$WorkingDir = "E:\arkascendedserver\ShooterGame\Binaries\Win64",
+  [string]$WorkingDir = "C:\arkascendedserver\ShooterGame\Binaries\Win64",
   [switch]$BootstrapIfMissing,
   [switch]$NoFirewall,
   [string]$Branch = "",
@@ -36,6 +36,16 @@ function Ensure-Folder {
   if (-not (Test-Path -LiteralPath $Path)) {
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
   }
+}
+
+function Get-ChocolateyExe {
+  $defaultPath = 'C:\ProgramData\chocolatey\bin\choco.exe'
+  if (Test-Path -LiteralPath $defaultPath) { return $defaultPath }
+
+  $command = Get-Command choco.exe -ErrorAction SilentlyContinue
+  if ($command) { return $command.Source }
+
+  throw "Chocolatey (choco.exe) is required but was not found. Install Chocolatey from https://chocolatey.org/install and re-run this script."
 }
 
 function Get-RootFromWorkingDir {
@@ -79,71 +89,51 @@ function Install-VCppRedist {
 
   if (Test-VCppRedistInstalled) { Write-Host "VC++ Redist already installed."; return }
 
-  # --- Use explicit Chocolatey path ---
-  $ChocoPath = 'C:\ProgramData\chocolatey\bin\choco.exe'
-  $chocoExists = Test-Path -LiteralPath $ChocoPath
-
-  if ($chocoExists) {
-    try {
-      Write-Host "Installing VC++ Redist via Chocolatey ($ChocoPath)..."
-      & $ChocoPath install vcredist140 -y --no-progress
-      if (Test-VCppRedistInstalled) {
-        Write-Host "VC++ Redist installed via Chocolatey."
-        return
-      }
-      Write-Warning "Chocolatey completed but runtime not detected. Falling back to direct download..."
-    } catch {
-      Write-Warning "Chocolatey failed: $($_.Exception.Message). Falling back to direct download..."
-    }
-  } else {
-    Write-Host "Chocolatey not found at $ChocoPath using direct download."
+  $chocoPath = Get-ChocolateyExe
+  Write-Host "Installing VC++ Redist via Chocolatey ($chocoPath)..."
+  & $chocoPath install vcredist140 -y --no-progress
+  if ($LASTEXITCODE -ne 0) {
+    throw "Chocolatey failed to install vcredist140 (exit code $LASTEXITCODE)."
   }
-
-  # --- Fallback: direct Microsoft download ---
-  $ProgressPreference = 'SilentlyContinue'
-  $temp = Join-Path $env:TEMP "vc_redist.x64.exe"
-  $url  = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
-  try {
-    Write-Host "Downloading VC++ Redist..."
-    Invoke-WebRequest -Uri $url -OutFile $temp -UseBasicParsing -ErrorAction Stop
-    Write-Host "Installing VC++ Redist (silent)..."
-    Start-Process -FilePath $temp -ArgumentList "/install","/passive","/norestart" -Wait -ErrorAction Stop
-  } finally {
-    if (Test-Path $temp -and (Test-VCppRedistInstalled)) {
-      Remove-Item $temp -Force -ErrorAction SilentlyContinue
-    }
-  }
-
   if (-not (Test-VCppRedistInstalled)) {
-    throw "Failed to install the Microsoft Visual C++ 2015–2022 Redistributable (x64)."
+    throw "Chocolatey completed, but the Microsoft Visual C++ 2015–2022 Redistributable (x64) is still not detected."
   }
-  Write-Host "VC++ Redist installed."
+  Write-Host "VC++ Redist installed via Chocolatey."
 }
 
 function Ensure-SteamCMD {
   param([Parameter(Mandatory)][string]$BaseDir)
   Assert-Admin
-  $steamCmdDir = Join-Path $BaseDir "steamcmd"
-  $steamCmdExe = Join-Path $steamCmdDir "steamcmd.exe"
 
-  if (Test-Path -LiteralPath $steamCmdExe) {
-    Write-Host "SteamCMD already present at $steamCmdExe"
-    return $steamCmdExe
+  function Get-SteamCmdPath {
+    $command = Get-Command steamcmd.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) { return $command.Source }
+
+    $chocoDefault = Join-Path 'C:\ProgramData\chocolatey\lib\steamcmd\tools\steamcmd' 'steamcmd.exe'
+    if (Test-Path -LiteralPath $chocoDefault) { return $chocoDefault }
+
+    return $null
   }
 
-  Ensure-Folder $steamCmdDir
-  $zipPath = Join-Path $steamCmdDir "steamcmd.zip"
-  $url     = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
+  $existingSteamCmd = Get-SteamCmdPath
+  if ($existingSteamCmd) {
+    Write-Host "SteamCMD already available at $existingSteamCmd"
+    return $existingSteamCmd
+  }
 
-  Write-Host "Downloading SteamCMD..."
-  Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -ErrorAction Stop
+  $chocoPath = Get-ChocolateyExe
+  Write-Host "Installing SteamCMD via Chocolatey ($chocoPath)..."
+  & $chocoPath install steamcmd -y --no-progress
+  if ($LASTEXITCODE -ne 0) {
+    throw "Chocolatey failed to install steamcmd (exit code $LASTEXITCODE)."
+  }
 
-  Write-Host "Extracting SteamCMD..."
-  Add-Type -AssemblyName System.IO.Compression.FileSystem
-  [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $steamCmdDir)
+  $steamCmdExe = Get-SteamCmdPath
+  if (-not $steamCmdExe) {
+    throw "SteamCMD installation via Chocolatey completed but steamcmd.exe was not found."
+  }
 
-  Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-  Write-Host "SteamCMD installed to $steamCmdExe"
+  Write-Host "SteamCMD installed at $steamCmdExe"
   return $steamCmdExe
 }
 
