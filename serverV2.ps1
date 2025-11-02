@@ -11,10 +11,12 @@ param(
   [switch]$NoFirewall,
   [string]$Branch = "",
   [string]$BetaPassword = "",
+  [switch]$SkipModPrefetch,
+  [int]$TimeoutMinutes = 20,
 
 # Server runtime settings
   [string]$Map = "TheIsland_WP",
-  [string]$SessionName = "My ASA Server",
+  [string]$SessionName = "MyASAServer",
   [int]$MaxPlayers = 16,
   [int]$GamePort = 7777,
   [int]$QueryPort = 27015,
@@ -211,6 +213,46 @@ function Ensure-FirewallRules {
   }
 }
 
+function Build-ServerArgs {
+  param(
+    [string]$Map,
+    [string]$SessionName,
+    [int]$GamePort,
+    [int]$QueryPort,
+    [int]$MaxPlayers,
+    [string]$ServerPassword,
+    [string]$ServerAdminPassword,
+    [Nullable[int]]$RCONPort,
+    [switch]$NoBattlEye,
+    [string[]]$Mods,
+    [string[]]$ExtraArgs
+  )
+
+  $urlParts = @()
+  $urlParts += "$Map"
+  $urlParts += "?SessionName=$([uri]::EscapeDataString($SessionName))"
+  $urlParts += "?Port=$GamePort"
+  $urlParts += "?QueryPort=$QueryPort"
+  $urlParts += "?MaxPlayers=$MaxPlayers"
+  if ($ServerPassword)      { $urlParts += "?ServerPassword=$ServerPassword" }
+  if ($ServerAdminPassword) { $urlParts += "?ServerAdminPassword=$ServerAdminPassword" }
+  if ($null -ne $RCONPort)  { $urlParts += "?RCONPort=$RCONPort" }
+
+  $args = @(($urlParts -join "") + " listen")
+
+  if ($Mods -and $Mods.Count -gt 0) {
+    $modList = ($Mods -join ",")
+    $args += "-mods=$modList"
+    Write-Host "Using ASA mods: $modList"
+  }
+
+  if ($NoBattlEye) { $args += "-NoBattlEye" }
+
+  if ($ExtraArgs -and $ExtraArgs.Count -gt 0) { $args += $ExtraArgs }
+
+  return ,$args
+}
+
 function Bootstrap-IfNeeded {
   param(
     [Parameter(Mandatory)][string]$WorkingDir,
@@ -250,33 +292,82 @@ function Start-ASAServer {
     throw "Server binary not found at $exe"
   }
 
-  # Build map + query string safely
-  $urlParts = @()
-  $urlParts += "$Map"
-  $urlParts += "?SessionName=$([uri]::EscapeDataString($SessionName))"
-  $urlParts += "?Port=$GamePort"
-  $urlParts += "?QueryPort=$QueryPort"
-  $urlParts += "?MaxPlayers=$MaxPlayers"
-  if ($ServerPassword)      { $urlParts += "?ServerPassword=$ServerPassword" }
-  if ($ServerAdminPassword) { $urlParts += "?ServerAdminPassword=$ServerAdminPassword" }
-  if ($null -ne $RCONPort)  { $urlParts += "?RCONPort=$RCONPort" }
-
-  $mapAndParams = $urlParts -join ""
-
-  # Add 'listen' with a leading space (do not put comments inside strings)
-  $args = @($mapAndParams + " listen")
-  if ($Mods -and $Mods.Count -gt 0) {
-    $modList = ($Mods -join ",")
-    $args += "-mods=$modList"
-    Write-Host "Using ASA mods: $modList"
-  }
-  if ($NoBattlEye) { $args += "-NoBattlEye" }
-  if ($ExtraArgs -and $ExtraArgs.Count -gt 0) { $args += $ExtraArgs }
+  $args = Build-ServerArgs -Map $Map -SessionName $SessionName -GamePort $GamePort -QueryPort $QueryPort -MaxPlayers $MaxPlayers `
+    -ServerPassword $ServerPassword -ServerAdminPassword $ServerAdminPassword -RCONPort $RCONPort `
+    -NoBattlEye:$NoBattlEye -Mods $Mods -ExtraArgs $ExtraArgs
 
   Write-Host "Launching ASA server..."
   Write-Host "Path: $exe"
   Write-Host "Args: $($args -join ' ')"
   Start-Process -FilePath $exe -ArgumentList $args -NoNewWindow -WorkingDirectory $WorkingDir
+}
+
+function Prefetch-ASAMods {
+  param(
+    [Parameter(Mandatory)][string]$WorkingDir,
+    [string]$Map,
+    [string]$SessionName,
+    [int]$MaxPlayers,
+    [int]$GamePort,
+    [int]$QueryPort,
+    [Nullable[int]]$RCONPort,
+    [string]$ServerPassword,
+    [string]$ServerAdminPassword,
+    [switch]$NoBattlEye,
+    [string[]]$Mods,
+    [string[]]$ExtraArgs,
+    [int]$TimeoutMinutes
+  )
+
+  if (-not ($Mods) -or $Mods.Count -eq 0) {
+    Write-Host "No mods specified; skipping prefetch."
+    return
+  }
+
+  $exe = Join-Path $WorkingDir "ArkAscendedServer.exe"
+  if (-not (Test-Path -LiteralPath $exe)) {
+    throw "ArkAscendedServer.exe not found at: $exe"
+  }
+
+  $prefetchExtras = @("-server","-NoCrashDialog")
+  if ($ExtraArgs) { $prefetchExtras += $ExtraArgs }
+
+  $args = Build-ServerArgs -Map $Map -SessionName $SessionName -GamePort $GamePort -QueryPort $QueryPort -MaxPlayers $MaxPlayers `
+    -ServerPassword $ServerPassword -ServerAdminPassword $ServerAdminPassword -RCONPort $RCONPort `
+    -NoBattlEye:$NoBattlEye -Mods $Mods -ExtraArgs $prefetchExtras
+
+  Write-Host "Starting temporary ASA server instance to prefetch mods..."
+  $proc = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory $WorkingDir -PassThru
+
+  $timeout = (Get-Date).AddMinutes($TimeoutMinutes)
+  $logDir = Join-Path $WorkingDir "..\..\Saved\Logs"
+  Write-Host "Monitoring logs in: $logDir"
+
+  $modsDownloaded = $false
+  try {
+    do {
+      Start-Sleep -Seconds 10
+      $logFiles = Get-ChildItem -Path $logDir -Filter "*.log" -ErrorAction SilentlyContinue
+      foreach ($log in $logFiles) {
+        $complete = Get-Content $log.FullName -ErrorAction SilentlyContinue | Select-String "Mod download complete"
+        if ($complete) {
+          $modsDownloaded = $true
+          break
+        }
+      }
+    } until ($modsDownloaded -or (Get-Date) -gt $timeout)
+
+    if ($modsDownloaded) {
+      Write-Host "Mods downloaded successfully."
+    } else {
+      Write-Warning "Timeout reached ($TimeoutMinutes minutes). Mods may still be downloading."
+    }
+  } finally {
+    if ($proc -and -not $proc.HasExited) {
+      Write-Host "Stopping temporary server instance..."
+      Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
 
 # =====================[ Command Dispatch ]=====================
@@ -285,13 +376,35 @@ switch ($Command) {
   'setup' {
     try {
       Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall -Branch $Branch -BetaPassword $BetaPassword
+      if (-not $SkipModPrefetch -and $Mods -and $Mods.Count -gt 0) {
+        try {
+          Prefetch-ASAMods -WorkingDir $WorkingDir -Map $Map -SessionName $SessionName -MaxPlayers $MaxPlayers `
+            -GamePort $GamePort -QueryPort $QueryPort -RCONPort $RCONPort -ServerPassword $ServerPassword `
+            -ServerAdminPassword $ServerAdminPassword -NoBattlEye:$NoBattlEye -Mods $Mods -ExtraArgs $ExtraArgs `
+            -TimeoutMinutes $TimeoutMinutes
+        } catch {
+          Write-Warning "Mod prefetch failed: $($_.Exception.Message)"
+        }
+      }
     } catch { Write-Error $_; exit 1 }
     break
   }
 
   'start' {
     if ($BootstrapIfMissing) {
-      try { Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall -Branch $Branch -BetaPassword $BetaPassword }
+      try {
+        Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall -Branch $Branch -BetaPassword $BetaPassword
+        if (-not $SkipModPrefetch -and $Mods -and $Mods.Count -gt 0) {
+          try {
+            Prefetch-ASAMods -WorkingDir $WorkingDir -Map $Map -SessionName $SessionName -MaxPlayers $MaxPlayers `
+              -GamePort $GamePort -QueryPort $QueryPort -RCONPort $RCONPort -ServerPassword $ServerPassword `
+              -ServerAdminPassword $ServerAdminPassword -NoBattlEye:$NoBattlEye -Mods $Mods -ExtraArgs $ExtraArgs `
+              -TimeoutMinutes $TimeoutMinutes
+          } catch {
+            Write-Warning "Mod prefetch failed: $($_.Exception.Message)"
+          }
+        }
+      }
       catch { Write-Error $_; exit 1 }
     }
     try {
@@ -320,8 +433,15 @@ switch ($Command) {
       try { Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall -Branch $Branch -BetaPassword $BetaPassword }
       catch { Write-Error $_; exit 1 }
     }
-    # Hook for future: download mods, etc.
-    Write-Host "Prefetch complete."
+    try {
+      Prefetch-ASAMods -WorkingDir $WorkingDir -Map $Map -SessionName $SessionName -MaxPlayers $MaxPlayers `
+        -GamePort $GamePort -QueryPort $QueryPort -RCONPort $RCONPort -ServerPassword $ServerPassword `
+        -ServerAdminPassword $ServerAdminPassword -NoBattlEye:$NoBattlEye -Mods $Mods -ExtraArgs $ExtraArgs `
+        -TimeoutMinutes $TimeoutMinutes
+    } catch {
+      Write-Error $_; exit 1
+    }
+    Write-Host "Prefetch command complete."
     break
   }
 
