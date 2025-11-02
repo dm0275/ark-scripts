@@ -1,180 +1,142 @@
-<# 
-.SYNOPSIS
-  ARK: Survival Ascended Server Manager
-
-.USAGE
-  .\server.ps1 start [flags...]
-  .\server.ps1 update [flags...]
-  .\server.ps1 prefetch [flags...]
-
-.NOTES
-  - Default path: E:\arkascendedserver\ShooterGame\Binaries\Win64
-  - Steam App ID: 2430930
-  - Mods auto-download/update when using -mods=<ids>
-#>
-
-[CmdletBinding(DefaultParameterSetName="Start")]
+#requires -Version 5.1
 param(
-  # --- Top-level command ------------------------------------------------------
+# Top-level command
   [Parameter(Mandatory=$true, Position=0)]
-  [ValidateSet("setup", "start","update","prefetch")]
+  [ValidateSet('setup','start','update','prefetch')]
   [string]$Command,
 
-  # --- Shared -----------------------------------------------------------------
+# Shared
   [string]$WorkingDir = "E:\arkascendedserver\ShooterGame\Binaries\Win64",
   [switch]$BootstrapIfMissing,
-
-  # --- START / PREFETCH PARAMS ------------------------------------------------
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [string]$Map = "TheIsland_WP",
-
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [string]$SessionName = "My ASA Server",
-
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [int]$MaxPlayers = 16,
-
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [int]$GamePort = 7777,
-
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [int]$QueryPort = 27015,
-
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [Nullable[int]]$RCONPort = 27020,
-
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [string]$ServerPassword = "",
-
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [string]$ServerAdminPassword = "ChangeMeAdmin!",
-
-  # BattlEye disabled by default
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [switch]$NoBattlEye = $true,
-
-  [Parameter(ParameterSetName="Start")]
   [switch]$NoFirewall,
+  [string]$Branch = "",
+  [string]$BetaPassword = "",
 
-  [Parameter(ParameterSetName="Start")]
-  [switch]$NoAutoRestart,
-
-  [Parameter(ParameterSetName="Start")]
-  [int]$RestartDelaySeconds = 5,
-
-  # ASA mods via -mods=
-  [Parameter(ParameterSetName="Start")]
-  [Parameter(ParameterSetName="Prefetch")]
-  [string[]]$Mods = @("929578", "953154", "934231"),
-
-  [Parameter(ParameterSetName="Start")]
-  [string[]]$ExtraArgs = @("-server","-log"),
-
-  # --- PREFETCH PARAMS --------------------------------------------------------
-  [Parameter(ParameterSetName="Prefetch")]
-  [int]$TimeoutMinutes = 20,
-
-  # --- UPDATE PARAMS ----------------------------------------------------------
-  [Parameter(ParameterSetName="Update")]
-  [string]$SteamCmdPath = "C:\steamcmd\steamcmd.exe",
-
-  [Parameter(ParameterSetName="Update")]
-  [string]$InstallDir = "E:\arkascendedserver",
-
-  [Parameter(ParameterSetName="Update")]
-  [switch]$Validate,
-
-  [Parameter(ParameterSetName="Update")]
-  [string]$SteamLogin = "anonymous"
+# Server runtime settings
+  [string]$Map = "TheIsland_WP",
+  [string]$SessionName = "My ASA Server",
+  [int]$MaxPlayers = 16,
+  [int]$GamePort = 7777,
+  [int]$QueryPort = 27015,
+  [Nullable[int]]$RCONPort = 27020,
+  [string]$ServerPassword = "",
+  [string]$ServerAdminPassword = ""
 )
 
-# =====================[ Bootstrap Helpers ]=====================
+# =====================[ Helpers ]=====================
 
 function Assert-Admin {
   $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
   ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-  if (-not $isAdmin) {
-    throw "This action requires an elevated PowerShell (Run as Administrator)."
-  }
-}
-
-function Get-RootFromWorkingDir {
-  param([Parameter(Mandatory)][string]$WorkingDir)
-  try {
-    $wd = Resolve-Path $WorkingDir
-  } catch { $wd = $WorkingDir }
-  # Expect ...\ShooterGame\Binaries\Win64 -> root is 3 levels up
-  $root = Join-Path $wd "..\..\.."
-  $root = Resolve-Path $root -ErrorAction SilentlyContinue
-  if (-not $root) {
-    # Fallback: parent of the working dir
-    $root = Split-Path -Path $WorkingDir -Parent
-  }
-  return $root
+  if (-not $isAdmin) { throw "This action requires an elevated PowerShell (Run as Administrator)." }
 }
 
 function Ensure-Folder {
   param([Parameter(Mandatory)][string]$Path)
-  if (-not (Test-Path $Path)) {
-    New-Item -ItemType Directory -Path $Path | Out-Null
+  if (-not (Test-Path -LiteralPath $Path)) {
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
   }
 }
 
-function Test-Command {
-  param([Parameter(Mandatory)][string]$Name)
-  $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+function Get-RootFromWorkingDir {
+  param([Parameter(Mandatory=$true)][string]$WorkingDir)
+
+  # Avoid Resolve-Path if it doesn't exist yet (fresh machine).
+  $wd = $WorkingDir
+  if (Test-Path -LiteralPath $WorkingDir) {
+    try { $wd = (Resolve-Path -LiteralPath $WorkingDir -ErrorAction Stop).Path } catch { $wd = $WorkingDir }
+  }
+
+  # Walk up the tree without "if-as-expression" (PS5-safe).
+  $lvl1 = Split-Path -Path $wd -Parent           # ...\Binaries
+  $lvl2 = $null; if ($lvl1) { $lvl2 = Split-Path -Path $lvl1 -Parent }   # ...\ShooterGame
+  $lvl3 = $null; if ($lvl2) { $lvl3 = Split-Path -Path $lvl2 -Parent }   # root (expected)
+
+  $root = $lvl3
+  if (-not $root) { $root = $lvl2 }
+  if (-not $root) { $root = $lvl1 }
+  if (-not $root) { $root = Split-Path -Path $wd -Parent }
+  if (-not $root) { $root = (Get-Location).Path }
+  return $root
 }
 
 function Install-VCppRedist {
-  Write-Host "Checking Microsoft Visual C++ 2015-2022 x64 Redistributable..."
-  # Try winget first
-  if (Test-Command -Name 'winget') {
-    $pkg = winget list --id Microsoft.VCRedist.2015+.x64 --accept-source-agreements 2>$null
-    if ($LASTEXITCODE -eq 0 -and $pkg -match 'Microsoft Visual C\+\+.*2015.*2022.*x64') {
-      Write-Host "VC++ Redist already installed."
-      return
+  Write-Host "Checking Microsoft Visual C++ 2015–2022 Redistributable (x64)..."
+
+  function Test-VCppRedistInstalled {
+    $keys = @(
+      'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+      'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+    )
+    foreach ($k in $keys) {
+      try {
+        $v = Get-ItemProperty -Path $k -ErrorAction Stop
+        if ($v.Installed -eq 1 -and $v.Major -ge 14) { return $true }
+      } catch {}
     }
-    Write-Host "Installing VC++ Redist via winget..."
-    winget install --id Microsoft.VCRedist.2015+.x64 --silent --accept-source-agreements --accept-package-agreements
-    return
+    return $false
   }
 
-  # Fallback: direct download
-  $temp = Join-Path $env:TEMP "vc_redist_x64.exe"
+  if (Test-VCppRedistInstalled) { Write-Host "VC++ Redist already installed."; return }
+
+  # --- Use explicit Chocolatey path ---
+  $ChocoPath = 'C:\ProgramData\chocolatey\bin\choco.exe'
+  $chocoExists = Test-Path -LiteralPath $ChocoPath
+
+  if ($chocoExists) {
+    try {
+      Write-Host "Installing VC++ Redist via Chocolatey ($ChocoPath)..."
+      & $ChocoPath install vcredist140 -y --no-progress
+      if (Test-VCppRedistInstalled) {
+        Write-Host "VC++ Redist installed via Chocolatey."
+        return
+      }
+      Write-Warning "Chocolatey completed but runtime not detected. Falling back to direct download..."
+    } catch {
+      Write-Warning "Chocolatey failed: $($_.Exception.Message). Falling back to direct download..."
+    }
+  } else {
+    Write-Host "Chocolatey not found at $ChocoPath using direct download."
+  }
+
+  # --- Fallback: direct Microsoft download ---
+  $ProgressPreference = 'SilentlyContinue'
+  $temp = Join-Path $env:TEMP "vc_redist.x64.exe"
   $url  = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
-  Write-Host "Downloading VC++ Redist from Microsoft..."
-  Invoke-WebRequest -Uri $url -OutFile $temp -UseBasicParsing
-  Write-Host "Installing VC++ Redist (silent)..."
-  Start-Process -FilePath $temp -ArgumentList "/install","/passive","/norestart" -Wait
+  try {
+    Write-Host "Downloading VC++ Redist..."
+    Invoke-WebRequest -Uri $url -OutFile $temp -UseBasicParsing -ErrorAction Stop
+    Write-Host "Installing VC++ Redist (silent)..."
+    Start-Process -FilePath $temp -ArgumentList "/install","/passive","/norestart" -Wait -ErrorAction Stop
+  } finally {
+    if (Test-Path $temp -and (Test-VCppRedistInstalled)) {
+      Remove-Item $temp -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  if (-not (Test-VCppRedistInstalled)) {
+    throw "Failed to install the Microsoft Visual C++ 2015–2022 Redistributable (x64)."
+  }
+  Write-Host "VC++ Redist installed."
 }
 
 function Ensure-SteamCMD {
   param([Parameter(Mandatory)][string]$BaseDir)
-
+  Assert-Admin
   $steamCmdDir = Join-Path $BaseDir "steamcmd"
   $steamCmdExe = Join-Path $steamCmdDir "steamcmd.exe"
 
-  if (Test-Path $steamCmdExe) {
+  if (Test-Path -LiteralPath $steamCmdExe) {
     Write-Host "SteamCMD already present at $steamCmdExe"
     return $steamCmdExe
   }
 
-  Assert-Admin
   Ensure-Folder $steamCmdDir
   $zipPath = Join-Path $steamCmdDir "steamcmd.zip"
   $url     = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
 
   Write-Host "Downloading SteamCMD..."
-  Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+  Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -ErrorAction Stop
 
   Write-Host "Extracting SteamCMD..."
   Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -195,12 +157,11 @@ function Ensure-ASAServerFiles {
   Assert-Admin
 
   $appId      = "2430930"
-  $installDir = $BaseDir  # Use root as the app install base (matches your default layout)
+  $installDir = $BaseDir
 
   Ensure-Folder $installDir
 
   $login = "+login anonymous"
-  $branchArgs = ""
   if ($Branch -and $Branch.Trim()) {
     $branchArgs = "+app_update $appId -beta $Branch"
     if ($BetaPassword -and $BetaPassword.Trim()) {
@@ -218,7 +179,7 @@ function Ensure-ASAServerFiles {
     "+quit"
   ) -join ' '
 
-  Write-Host "Syncing ASA server files to $installDir (this can take a while on first run)..."
+  Write-Host "Syncing ASA server files to $installDir (first run may take a while)..."
   & $SteamCmdExe $args
   if ($LASTEXITCODE -ne 0) {
     throw "SteamCMD failed to install/update ASA server (exit $LASTEXITCODE)."
@@ -227,31 +188,26 @@ function Ensure-ASAServerFiles {
 }
 
 function Ensure-FirewallRules {
-  param(
-    [switch]$SkipFirewall
-  )
-  if ($SkipFirewall) {
-    Write-Host "Skipping firewall configuration per -NoFirewall."
-    return
-  }
+  param([switch]$SkipFirewall)
 
+  if ($SkipFirewall) { Write-Host "Skipping firewall configuration per -NoFirewall."; return }
   Assert-Admin
 
-  # Typical ASA ports (adjust to your script’s actual ports if different)
   $rules = @(
-    @{ Name="ASA_UDP_7777";  Protocol="UDP"; LocalPort=7777;  Dir="Inbound";  Action="Allow" },
-    @{ Name="ASA_UDP_7778";  Protocol="UDP"; LocalPort=7778;  Dir="Inbound";  Action="Allow" },
-    @{ Name="ASA_UDP_27015"; Protocol="UDP"; LocalPort=27015; Dir="Inbound";  Action="Allow" },
-    @{ Name="ASA_TCP_27020"; Protocol="TCP"; LocalPort=27020; Dir="Inbound";  Action="Allow" }
+    @{ Name="ASA_UDP_7777";  Protocol="UDP"; Port=7777 },
+    @{ Name="ASA_UDP_7778";  Protocol="UDP"; Port=7778 },
+    @{ Name="ASA_UDP_27015"; Protocol="UDP"; Port=27015 },
+    @{ Name="ASA_TCP_27020"; Protocol="TCP"; Port=27020 }
   )
 
   foreach ($r in $rules) {
-    $existing = Get-NetFirewallRule -DisplayName $r.Name -ErrorAction SilentlyContinue
+    $Name=$r.Name; $Protocol=$r.Protocol; $Port=$r.Port
+    $existing = Get-NetFirewallRule -DisplayName $Name -ErrorAction SilentlyContinue
     if (-not $existing) {
-      New-NetFirewallRule -DisplayName $r.Name -Direction $r.Dir -Action $r.Action -Protocol $r.Protocol -LocalPort $r.LocalPort | Out-Null
-      Write-Host "Added firewall rule $($r.Name)"
+      New-NetFirewallRule -DisplayName $Name -Direction Inbound -Action Allow -Protocol $Protocol -LocalPort $Port | Out-Null
+      Write-Host ("Created firewall rule: {0} ({1} {2})" -f $Name, $Protocol, $Port)
     } else {
-      Write-Host "Firewall rule $($r.Name) already exists."
+      Write-Host ("Firewall rule already exists: {0}" -f $Name)
     }
   }
 }
@@ -263,45 +219,36 @@ function Bootstrap-IfNeeded {
     [string]$Branch = "",
     [string]$BetaPassword = ""
   )
-
-  # Determine root dir from WorkingDir
   $baseDir = Get-RootFromWorkingDir -WorkingDir $WorkingDir
-  Write-Host "Base directory resolved to: $baseDir"
+  Ensure-Folder $baseDir
 
-  # 1) VC++ runtime
   Install-VCppRedist
-
-  # 2) SteamCMD
   $steamCmd = Ensure-SteamCMD -BaseDir $baseDir
-
-  # 3) ASA server files
   Ensure-ASAServerFiles -BaseDir $baseDir -SteamCmdExe $steamCmd -Branch $Branch -BetaPassword $BetaPassword
-
-  # 4) Firewall
   Ensure-FirewallRules -SkipFirewall:$NoFirewall
+
   Write-Host "Bootstrap complete."
 }
-# ===================[ End Bootstrap Helpers ]===================
 
+function Start-ASAServer {
+  param(
+    [Parameter(Mandatory)][string]$WorkingDir,
+    [string]$Map,
+    [string]$SessionName,
+    [int]$MaxPlayers,
+    [int]$GamePort,
+    [int]$QueryPort,
+    [Nullable[int]]$RCONPort,
+    [string]$ServerPassword,
+    [string]$ServerAdminPassword
+  )
 
-
-# Utility helpers
-function Write-Header($Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
-
-function Ensure-FirewallRule {
-  param([string]$Name,[string]$Protocol,[int]$Port)
-  $existing = Get-NetFirewallRule -DisplayName $Name -ErrorAction SilentlyContinue
-  if (-not $existing) {
-    New-NetFirewallRule -DisplayName $Name -Direction Inbound -Action Allow `
-      -Protocol $Protocol -LocalPort $Port | Out-Null
-    Write-Host "Created firewall rule: $Name ($Protocol $Port)"
+  $exe = Join-Path $WorkingDir "ShooterGameServer.exe"
+  if (-not (Test-Path -LiteralPath $exe)) {
+    throw "Server binary not found at $exe"
   }
-}
 
-function Build-ServerArgs {
-  param($Map,$SessionName,$GamePort,$QueryPort,$MaxPlayers,$ServerPassword,$ServerAdminPassword,$RCONPort,$Mods,$NoBattlEye,$ExtraArgs)
-
-  # Build URL-style part; ensure a SPACE before 'listen' so it doesn't glue to the last token
+  # Build map + query string safely
   $urlParts = @()
   $urlParts += "$Map"
   $urlParts += "?SessionName=$([uri]::EscapeDataString($SessionName))"
@@ -312,159 +259,64 @@ function Build-ServerArgs {
   if ($ServerAdminPassword) { $urlParts += "?ServerAdminPassword=$ServerAdminPassword" }
   if ($null -ne $RCONPort)  { $urlParts += "?RCONPort=$RCONPort" }
 
-  # <- key fix: add a leading space before 'listen'
-  $args = @(($urlParts -join "") + " listen")
+  $mapAndParams = $urlParts -join ""
 
-  if ($Mods.Count -gt 0) {
-    $modList = ($Mods -join ",")
-    $args += "-mods=$modList"
-    Write-Host "Using ASA mods: $modList"
-  }
-  if ($NoBattlEye) { $args += "-NoBattlEye" }
-  $args += $ExtraArgs
-  return ,$args
+  # Add 'listen' with a leading space (do not put comments inside strings)
+  $args = @($mapAndParams + " listen")
+
+  Write-Host "Launching ASA server..."
+  Write-Host "Path: $exe"
+  Write-Host "Args: $($args -join ' ')"
+  Start-Process -FilePath $exe -ArgumentList $args -NoNewWindow
 }
+
+# =====================[ Command Dispatch ]=====================
 
 switch ($Command) {
   'setup' {
     try {
-      Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall `
-        -Branch $Branch -BetaPassword $BetaPassword
-    } catch {
-      Write-Error $_
-      break
-    }
+      Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall -Branch $Branch -BetaPassword $BetaPassword
+    } catch { Write-Error $_; exit 1 }
     break
   }
 
   'start' {
-
-  if ($BootstrapIfMissing) {
+    if ($BootstrapIfMissing) {
+      try { Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall -Branch $Branch -BetaPassword $BetaPassword }
+      catch { Write-Error $_; exit 1 }
+    }
     try {
-      Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall `
-        -Branch $Branch -BetaPassword $BetaPassword
-    } catch {
-      Write-Error $_
-      break
-    }
-  }
-
-    $exe = Join-Path $WorkingDir "ArkAscendedServer.exe"
-    if (!(Test-Path $exe)) { throw "ArkAscendedServer.exe not found at: $exe" }
-
-    $args = Build-ServerArgs $Map $SessionName $GamePort $QueryPort $MaxPlayers `
-      $ServerPassword $ServerAdminPassword $RCONPort $Mods $NoBattlEye $ExtraArgs
-
-    if (-not $NoFirewall) {
-      try {
-        Ensure-FirewallRule -Name "ASA GamePort $GamePort (UDP)"  -Protocol UDP -Port $GamePort
-        Ensure-FirewallRule -Name "ASA QueryPort $QueryPort (UDP)" -Protocol UDP -Port $QueryPort
-        if ($null -ne $RCONPort) {
-          Ensure-FirewallRule -Name "ASA RCON $RCONPort (TCP)" -Protocol TCP -Port $RCONPort
-        }
-      } catch {
-        Write-Warning "Couldn't set firewall rules (run PowerShell as Administrator if needed)."
-      }
-    }
-
-    Write-Header "Launching Ark Ascended Server"
-    Write-Host "Path: $exe"
-    Write-Host "Args: $($args -join ' ')`n"
-
-    $auto = -not $NoAutoRestart
-    do {
-      $p = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory $WorkingDir -PassThru
-      Wait-Process -Id $p.Id
-      Write-Warning "Server exited with code $($p.ExitCode)"
-      if ($auto) {
-        Write-Host "Restarting in $RestartDelaySeconds seconds..."
-        Start-Sleep -Seconds $RestartDelaySeconds
-      }
-    } while ($auto)
+      Start-ASAServer -WorkingDir $WorkingDir -Map $Map -SessionName $SessionName -MaxPlayers $MaxPlayers `
+        -GamePort $GamePort -QueryPort $QueryPort -RCONPort $RCONPort -ServerPassword $ServerPassword -ServerAdminPassword $ServerAdminPassword
+    } catch { Write-Error $_; exit 1 }
+    break
   }
 
   'update' {
-
-  if ($BootstrapIfMissing) {
+    if ($BootstrapIfMissing) {
+      try { Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall -Branch $Branch -BetaPassword $BetaPassword }
+      catch { Write-Error $_; exit 1 }
+    }
     try {
-      Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall `
-        -Branch $Branch -BetaPassword $BetaPassword
-    } catch {
-      Write-Error $_
-      break
-    }
-  }
-
-    if (!(Test-Path $SteamCmdPath)) { throw "SteamCMD not found at: $SteamCmdPath" }
-    if (!(Test-Path $InstallDir)) {
-      Write-Host "Creating InstallDir: $InstallDir"
-      New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    }
-
-    $appId = 2430930
-    $validateToken = if ($Validate) { " validate" } else { "" }
-    $cmd = "+force_install_dir `"$InstallDir`" +login $SteamLogin +app_update $appId$validateToken +quit"
-
-    Write-Header "Updating ASA Dedicated Server (Steam AppID $appId)"
-    Write-Host "SteamCMD: $SteamCmdPath"
-    Write-Host "InstallDir: $InstallDir"
-    if ($Validate) { Write-Host "Validate: true" }
-
-    & $SteamCmdPath $cmd
-
-    if ($LASTEXITCODE -ne 0) { throw "SteamCMD returned exit code $LASTEXITCODE" }
-    Write-Host "`nUpdate completed."
+      $baseDir = Get-RootFromWorkingDir -WorkingDir $WorkingDir
+      $steam   = Ensure-SteamCMD -BaseDir $baseDir
+      & $steam "+force_install_dir `"$baseDir`" +login anonymous +app_update 2430930 validate +quit"
+    } catch { Write-Error $_; exit 1 }
+    break
   }
 
   'prefetch' {
-
-  if ($BootstrapIfMissing) {
-    try {
-      Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall `
-        -Branch $Branch -BetaPassword $BetaPassword
-    } catch {
-      Write-Error $_
-      break
+    if ($BootstrapIfMissing) {
+      try { Bootstrap-IfNeeded -WorkingDir $WorkingDir -NoFirewall:$NoFirewall -Branch $Branch -BetaPassword $BetaPassword }
+      catch { Write-Error $_; exit 1 }
     }
+    # Hook for future: download mods, etc.
+    Write-Host "Prefetch complete."
+    break
   }
 
-    $exe = Join-Path $WorkingDir "ArkAscendedServer.exe"
-    if (!(Test-Path $exe)) { throw "ArkAscendedServer.exe not found at: $exe" }
-
-    if ($Mods.Count -eq 0) {
-      throw "No mods specified. Use -Mods <id1,id2,...>"
-    }
-
-    Write-Header "Prefetching Mods"
-    $args = Build-ServerArgs $Map $SessionName $GamePort $QueryPort $MaxPlayers `
-      $ServerPassword $ServerAdminPassword $RCONPort $Mods $NoBattlEye @("-server","-NoCrashDialog")
-
-    Write-Host "Starting server to download mods..."
-    $proc = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory $WorkingDir -PassThru
-
-    $timeout = (Get-Date).AddMinutes($TimeoutMinutes)
-    $logDir = Join-Path $WorkingDir "..\..\Saved\Logs"
-    Write-Host "Monitoring logs in: $logDir"
-
-    do {
-      Start-Sleep -Seconds 10
-      $logFiles = Get-ChildItem -Path $logDir -Filter "*.log" -ErrorAction SilentlyContinue
-      $found = $false
-      foreach ($log in $logFiles) {
-        $content = Get-Content $log.FullName -ErrorAction SilentlyContinue | Select-String "Downloading mod"
-        if ($content) { Write-Host "Mod download in progress..." }
-        $complete = Get-Content $log.FullName -ErrorAction SilentlyContinue | Select-String "Mod download complete"
-        if ($complete) { $found = $true }
-      }
-    } until ($found -or (Get-Date) -gt $timeout)
-
-    if ($found) {
-      Write-Host "Mods downloaded successfully!"
-    } else {
-      Write-Warning "Timeout reached ($TimeoutMinutes minutes). Mods may still be downloading."
-    }
-
-    Write-Host "Stopping server process..."
-    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+  default {
+    Write-Error "Unknown command '$Command'. Use: setup | start | update | prefetch"
+    exit 1
   }
 }
