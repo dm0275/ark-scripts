@@ -80,22 +80,22 @@ function Get-RootFromWorkingDir {
   return $root
 }
 
+function Test-VCppRedistInstalled {
+  $keys = @(
+    'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+  )
+  foreach ($k in $keys) {
+    try {
+      $v = Get-ItemProperty -Path $k -ErrorAction Stop
+      if ($v.Installed -eq 1 -and $v.Major -ge 14) { return $true }
+    } catch {}
+  }
+  return $false
+}
+
 function Install-VCppRedist {
   Write-Host "Checking Microsoft Visual C++ 2015–2022 Redistributable (x64)..."
-
-  function Test-VCppRedistInstalled {
-    $keys = @(
-      'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
-      'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
-    )
-    foreach ($k in $keys) {
-      try {
-        $v = Get-ItemProperty -Path $k -ErrorAction Stop
-        if ($v.Installed -eq 1 -and $v.Major -ge 14) { return $true }
-      } catch {}
-    }
-    return $false
-  }
 
   if (Test-VCppRedistInstalled) { Write-Host "VC++ Redist already installed."; return }
 
