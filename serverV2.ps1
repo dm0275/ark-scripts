@@ -14,7 +14,7 @@ param(
 
 # Server runtime settings
   [string]$Map = "TheIsland_WP",
-  [string]$SessionName = "My ASA Server",
+  [string]$SessionName = "My_ASA_Server",
   [int]$MaxPlayers = 16,
   [int]$GamePort = 7777,
   [int]$QueryPort = 27015,
@@ -239,7 +239,7 @@ function Start-ASAServer {
     [string]$ServerAdminPassword
   )
 
-  $exe = Join-Path $WorkingDir "ShooterGameServer.exe"
+  $exe = Join-Path $WorkingDir "ArkAscendedServer.exe"
   if (-not (Test-Path -LiteralPath $exe)) {
     throw "Server binary not found at $exe"
   }
