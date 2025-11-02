@@ -48,6 +48,16 @@ function Get-ChocolateyExe {
   throw "Chocolatey (choco.exe) is required but was not found. Install Chocolatey from https://chocolatey.org/install and re-run this script."
 }
 
+function Get-SteamCmdPath {
+  $command = Get-Command steamcmd.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($command) { return $command.Source }
+
+  $chocoDefault = Join-Path 'C:\ProgramData\chocolatey\lib\steamcmd\tools\steamcmd' 'steamcmd.exe'
+  if (Test-Path -LiteralPath $chocoDefault) { return $chocoDefault }
+
+  return $null
+}
+
 function Get-RootFromWorkingDir {
   param([Parameter(Mandatory=$true)][string]$WorkingDir)
 
@@ -104,16 +114,6 @@ function Install-VCppRedist {
 function Ensure-SteamCMD {
   param([Parameter(Mandatory)][string]$BaseDir)
   Assert-Admin
-
-  function Get-SteamCmdPath {
-    $command = Get-Command steamcmd.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($command) { return $command.Source }
-
-    $chocoDefault = Join-Path 'C:\ProgramData\chocolatey\lib\steamcmd\tools\steamcmd' 'steamcmd.exe'
-    if (Test-Path -LiteralPath $chocoDefault) { return $chocoDefault }
-
-    return $null
-  }
 
   $existingSteamCmd = Get-SteamCmdPath
   if ($existingSteamCmd) {
