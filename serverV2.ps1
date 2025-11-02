@@ -124,7 +124,7 @@ function Ensure-SteamCMD {
 
   $chocoPath = Get-ChocolateyExe
   Write-Host "Installing SteamCMD via Chocolatey ($chocoPath)..."
-  & $chocoPath install steamcmd -y --no-progress
+  & $chocoPath install steamcmd -y --no-progress | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "Chocolatey failed to install steamcmd (exit code $LASTEXITCODE)."
   }
