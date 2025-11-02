@@ -81,6 +81,7 @@ function Get-RootFromWorkingDir {
 }
 
 function Test-VCppRedistInstalled {
+  param()
   $keys = @(
     'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
@@ -95,7 +96,7 @@ function Test-VCppRedistInstalled {
 }
 
 function Install-VCppRedist {
-  Write-Host "Checking Microsoft Visual C++ 2015–2022 Redistributable (x64)..."
+  Write-Host "Checking Microsoft Visual C++ 2015-2022 Redistributable (x64)..."
 
   if (Test-VCppRedistInstalled) { Write-Host "VC++ Redist already installed."; return }
 
@@ -106,7 +107,7 @@ function Install-VCppRedist {
     throw "Chocolatey failed to install vcredist140 (exit code $LASTEXITCODE)."
   }
   if (-not (Test-VCppRedistInstalled)) {
-    throw "Chocolatey completed, but the Microsoft Visual C++ 2015–2022 Redistributable (x64) is still not detected."
+    throw "Chocolatey completed, but the Microsoft Visual C++ 2015-2022 Redistributable (x64) is still not detected."
   }
   Write-Host "VC++ Redist installed via Chocolatey."
 }
