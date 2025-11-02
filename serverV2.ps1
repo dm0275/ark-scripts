@@ -152,26 +152,31 @@ function Ensure-ASAServerFiles {
 
   Ensure-Folder $installDir
 
-  $login = "+login anonymous"
+  $cmdArgs = @(
+    "+force_install_dir", $installDir,
+    "+login", "anonymous",
+    "+app_update", $appId
+  )
+
   if ($Branch -and $Branch.Trim()) {
-    $branchArgs = "+app_update $appId -beta $Branch"
+    $cmdArgs += "-beta"
+    $cmdArgs += $Branch
     if ($BetaPassword -and $BetaPassword.Trim()) {
-      $branchArgs = "$branchArgs -betapassword $BetaPassword"
+      $cmdArgs += "-betapassword"
+      $cmdArgs += $BetaPassword
     }
-    $branchArgs = "$branchArgs validate"
+    $cmdArgs += "validate"
   } else {
-    $branchArgs = "+app_update $appId validate"
+    $cmdArgs += "validate"
   }
 
-  $args = @(
-    "+force_install_dir `"$installDir`""
-    $login
-    $branchArgs
-    "+quit"
-  ) -join ' '
+  $cmdArgs += "+quit"
 
+  $logCmd = $cmdArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
   Write-Host "Syncing ASA server files to $installDir (first run may take a while)..."
-  & $SteamCmdExe $args
+  Write-Host "SteamCMD command: $SteamCmdExe $($logCmd -join ' ')"
+
+  & $SteamCmdExe @cmdArgs
   if ($LASTEXITCODE -ne 0) {
     throw "SteamCMD failed to install/update ASA server (exit $LASTEXITCODE)."
   }
