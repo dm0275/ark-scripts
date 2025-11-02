@@ -24,7 +24,7 @@ param(
   [string]$ServerPassword = "",
   [string]$ServerAdminPassword = "",
   [switch]$NoBattlEye = $true,
-  [string[]]$Mods = @("929578", "953154", "934231"),
+  [string[]]$Mods = @("929578", "953154", "934231", "1061361"),
   [string[]]$ExtraArgs = @("-server","-log")
 )
 
